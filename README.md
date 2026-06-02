@@ -1,6 +1,6 @@
 Veeam API Reporter - Automated Infrastructure Monitoring
 
-questa solució automatitza la generació d'informes executius de rendiment i capacitat per a infraestructures Veeam Backup & Replication. Mitjançant l'ús de l'API REST de Veeam, scripts de processament en Python i orquestració amb Ansible, permet obtenir visibilitat total sobre l'estat dels backups sense necessitat de revisar la consola manualment.
+Aquesta solució automatitza la generació d'informes executius de rendiment i capacitat per a infraestructures Veeam Backup & Replication. Mitjançant l'ús de l'API REST de Veeam, scripts de processament en Python i orquestració amb Ansible, permet obtenir visibilitat total sobre l'estat dels backups sense necessitat de revisar la consola manualment.
 
 Funcionalitats principals
 Extracció de dades via API: Utilitza l'API REST de Veeam (v1.3+) per consultar sessions de BackupJob, BackupCopyJob, AgentBackup i HealthCheck.
