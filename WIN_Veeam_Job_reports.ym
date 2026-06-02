@@ -1,0 +1,137 @@
+---
+- name: INICIALITZAR INFORME VEEAM SETMANAL
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    sessions_file: "/tmp/veeam_sessions_weekly.json"
+
+  tasks:
+    - name: Esborrar fitxer temporal sessions si existeix
+      file:
+        path: "{{ sessions_file }}"
+        state: absent
+
+- name: OBTENIR DADES DE VEEAM
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    # --- CONFIGURACIÓN VEEAM API (SANITIZADO) ---
+    veeam_api_url: "https://veeam-backup-server.local:9419"
+    veeam_username: "DOMAIN\\veeam_api_user"
+    veeam_password: "{{ lookup('env', 'VEEAM_PASS') }}"
+    sessions_file: "/tmp/veeam_sessions_weekly.json"
+
+    # Nota: Es recomana calcular dinàmicament aquestes dates o passar-les com a variables
+    hc_start: "2024-01-01T00:00:00"
+    hc_end: "2024-01-08T00:00:00"
+
+  tasks:
+    - name: 1. Obtenir access token
+      uri:
+        url: "{{ veeam_api_url }}/api/oauth2/token"
+        method: POST
+        headers:
+          x-api-version: "1.3-rev1"
+          Content-Type: "application/x-www-form-urlencoded"
+          Accept: "application/json"
+        body: "grant_type=password&username={{ veeam_username | urlencode }}&password={{ veeam_password | urlencode }}"
+        body_format: raw
+        return_content: yes
+        status_code: 200
+        validate_certs: no
+      register: token_resp
+
+    - name: 2. Guardar access token
+      set_fact:
+        access_token: "{{ token_resp.json.access_token }}"
+
+    - name: 3. Obtenir sessions útils base
+      uri:
+        url: "{{ veeam_api_url }}/api/v1/sessions?skip=0&limit=10000&orderColumn=CreationTime&orderAsc=false&typeFilter=BackupJob&typeFilter=BackupCopyJob&typeFilter=AgentBackup&typeFilter=ConfigurationBackup&endedAfterFilter={{ hc_start }}&endedBeforeFilter={{ hc_end }}"
+        method: GET
+        headers:
+          x-api-version: "1.3-rev1"
+          Authorization: "Bearer {{ access_token }}"
+          Accept: "application/json"
+        return_content: yes
+        status_code: 200
+        validate_certs: no
+        timeout: 120
+      register: veeam_sessions_resp
+
+    - name: 4. Obtenir sessions Health Check
+      uri:
+        url: "{{ veeam_api_url }}/api/v1/sessions?skip=0&limit=2000&orderColumn=EndTime&orderAsc=false&nameFilter=*Backup%20Health%20Check*&endedAfterFilter={{ hc_start }}&endedBeforeFilter={{ hc_end }}"
+        method: GET
+        headers:
+          x-api-version: "1.3-rev1"
+          Authorization: "Bearer {{ access_token }}"
+          Accept: "application/json"
+        return_content: yes
+        status_code: 200
+        validate_certs: no
+        timeout: 120
+      register: veeam_healthcheck_resp
+
+    - name: 5. Unificar llistes de sessions
+      set_fact:
+        combined_list: "{{ (veeam_sessions_resp.json.data | default([])) + (veeam_healthcheck_resp.json.data | default([])) }}"
+
+    - name: 6. Guardar sessions en JSON
+      copy:
+        content: |
+          {
+            "data": {{ combined_list | to_json }}
+          }
+        dest: "{{ sessions_file }}"
+        mode: "0666"
+
+- name: GENERAR I ENVIAR INFORME HTML SETMANAL
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    sessions_file: "/tmp/veeam_sessions_weekly.json"
+    python_script_path: "{{ playbook_dir }}/../scripts/veeam_jobs_html.py"
+    # --- CONFIGURACIÓN SMTP (SANITIZADO) ---
+    my_smtp_host: "{{ smtp_host | default('smtp.yourdomain.local') }}"
+    my_smtp_port: "{{ smtp_port | default(25) }}"
+    my_smtp_user: "{{ smtp_user | default(smtp_username | default('ansible@yourdomain.com')) }}"
+    my_smtp_pass: "{{ smtp_pass | default(smtp_password | default(password | default(''))) }}"
+    email_recipients: "admin1@yourdomain.com, admin2@yourdomain.com"
+
+  tasks:
+    - name: 1. Comprovar fitxer sessions
+      stat:
+        path: "{{ sessions_file }}"
+      register: sessions_stat
+
+    - name: 2. Fallar si no existeix fitxer temporal
+      fail:
+        msg: "Falta el fitxer temporal de sessions"
+      when: not sessions_stat.stat.exists
+
+    - name: 3. Executar script Python HTML + email
+      command: "/usr/bin/python3 {{ python_script_path }}"
+      environment:
+        SMTP_HOST: "{{ my_smtp_host }}"
+        SMTP_PORT: "{{ my_smtp_port }}"
+        SMTP_USER: "{{ my_smtp_user }}"
+        SMTP_PASS: "{{ my_smtp_pass }}"
+        EMAIL_TO: "{{ email_recipients }}"
+        SESSIONS_FILE: "{{ sessions_file }}"
+      register: python_result
+
+    - name: 4. Mostrar eixida del script
+      debug:
+        var: python_result.stdout_lines
+
+    - name: 5. Esborrar fitxer temporal sessions
+      file:
+        path: "{{ sessions_file }}"
+        state: absent
